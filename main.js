@@ -2,238 +2,6 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // =======================================
-// إدارة المشاريع
-// =======================================
-class ProjectManager {
-    constructor() {
-        this.projects = [];
-        this.currentProject = null;
-        this.loadProjects();
-    }
-
-    loadProjects() {
-        const saved = localStorage.getItem('virtual-tour-projects');
-        if (saved) {
-            this.projects = JSON.parse(saved);
-        }
-    }
-
-    saveProjects() {
-        localStorage.setItem('virtual-tour-projects', JSON.stringify(this.projects));
-    }
-
-    newProject(name) {
-        const project = {
-            id: Date.now(),
-            name: name || `مشروع-${new Date().toLocaleDateString()}`,
-            created: new Date().toISOString(),
-            paths: [],
-            imageData: null
-        };
-        this.projects.push(project);
-        this.currentProject = project;
-        this.saveProjects();
-        return project;
-    }
-
-    saveCurrentProject(paths, imageData) {
-        if (this.currentProject) {
-            this.currentProject.paths = paths.map(path => ({
-                type: path.userData.type,
-                color: '#' + pathColors[path.userData.type].toString(16).padStart(6, '0'),
-                points: path.userData.points.map(p => ({
-                    x: p.x, y: p.y, z: p.z
-                }))
-            }));
-            this.currentProject.imageData = imageData;
-            this.currentProject.lastModified = new Date().toISOString();
-            this.saveProjects();
-        }
-    }
-}
-
-// =======================================
-// مصدر الجولات
-// =======================================
-class TourExporter {
-    constructor() {
-        this.zip = new JSZip();
-    }
-
-    async exportTour(projectName, imageData, paths, imageWidth, imageHeight) {
-        const folder = this.zip.folder(projectName);
-        
-        folder.file('panorama.jpg', imageData.split(',')[1], { base64: true });
-        
-        const pathsData = paths.map(path => ({
-            type: path.userData.type,
-            color: '#' + pathColors[path.userData.type].toString(16).padStart(6, '0'),
-            points: path.userData.points.map(p => ({
-                x: p.x, y: p.y, z: p.z
-            }))
-        }));
-        
-        folder.file('paths.json', JSON.stringify(pathsData, null, 2));
-        folder.file('index.html', this.generatePlayerHTML(projectName, imageWidth, imageHeight));
-        folder.file('style.css', this.generatePlayerCSS());
-        folder.file('README.md', this.generateReadme(projectName));
-        
-        const content = await this.zip.generateAsync({ type: 'blob' });
-        saveAs(content, `${projectName}.zip`);
-    }
-
-    generatePlayerHTML(projectName, width, height) {
-        return `<!DOCTYPE html>
-<html lang="ar">
-<head>
-    <meta charset="UTF-8">
-    <title>${projectName} - جولة افتراضية</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-</head>
-<body>
-    <div class="info">🏗️ ${projectName}</div>
-    <div id="container"></div>
-
-    <script>
-        fetch('paths.json')
-            .then(res => res.json())
-            .then(pathsData => {
-                const scene = new THREE.Scene();
-                const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-                camera.position.set(0, 0, 0.1);
-                
-                const renderer = new THREE.WebGLRenderer({ antialias: true });
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                document.getElementById('container').appendChild(renderer.domElement);
-                
-                const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
-                scene.add(ambientLight);
-                
-                new THREE.TextureLoader().load('panorama.jpg', texture => {
-                    texture.wrapS = THREE.RepeatWrapping;
-                    texture.wrapT = THREE.RepeatWrapping;
-                    texture.repeat.x = -1;
-                    
-                    const geometry = new THREE.SphereGeometry(500, 128, 128);
-                    const material = new THREE.MeshBasicMaterial({
-                        map: texture,
-                        side: THREE.BackSide
-                    });
-                    
-                    const sphere = new THREE.Mesh(geometry, material);
-                    scene.add(sphere);
-                    
-                    pathsData.forEach(pathData => {
-                        const points = pathData.points.map(p => new THREE.Vector3(p.x, p.y, p.z));
-                        
-                        for (let i = 0; i < points.length - 1; i++) {
-                            const start = points[i];
-                            const end = points[i + 1];
-                            
-                            const direction = new THREE.Vector3().subVectors(end, start);
-                            const distance = direction.length();
-                            
-                            if (distance < 5) continue;
-                            
-                            const cylinder = new THREE.Mesh(
-                                new THREE.CylinderGeometry(3.5, 3.5, distance, 12),
-                                new THREE.MeshStandardMaterial({ 
-                                    color: pathData.color,
-                                    emissive: pathData.color,
-                                    emissiveIntensity: 0.3
-                                })
-                            );
-                            
-                            const quaternion = new THREE.Quaternion();
-                            quaternion.setFromUnitVectors(
-                                new THREE.Vector3(0, 1, 0),
-                                direction.clone().normalize()
-                            );
-                            
-                            cylinder.applyQuaternion(quaternion);
-                            
-                            const center = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-                            cylinder.position.copy(center);
-                            
-                            scene.add(cylinder);
-                        }
-                    });
-                });
-                
-                const controls = new THREE.OrbitControls(camera, renderer.domElement);
-                controls.enableZoom = true;
-                controls.enablePan = false;
-                controls.enableDamping = true;
-                controls.autoRotate = true;
-                controls.autoRotateSpeed = 0.5;
-                
-                function animate() {
-                    requestAnimationFrame(animate);
-                    controls.update();
-                    renderer.render(scene, camera);
-                }
-                animate();
-                
-                window.addEventListener('resize', () => {
-                    camera.aspect = window.innerWidth / window.innerHeight;
-                    camera.updateProjectionMatrix();
-                    renderer.setSize(window.innerWidth, window.innerHeight);
-                });
-            });
-    </script>
-</body>
-</html>`;
-    }
-
-    generatePlayerCSS() {
-        return `body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
-#container { width: 100vw; height: 100vh; background: #000; }
-.info {
-    position: absolute;
-    top: 20px;
-    left: 20px;
-    background: rgba(0,0,0,0.7);
-    color: white;
-    padding: 10px 20px;
-    border-radius: 30px;
-    border: 2px solid #4a6c8f;
-    z-index: 100;
-    font-weight: bold;
-    backdrop-filter: blur(5px);
-}`;
-    }
-
-    generateReadme(projectName) {
-        return `# ${projectName}
-
-## جولة افتراضية ثلاثية الأبعاد
-
-### كيفية الاستخدام:
-1. افتح ملف \`index.html\` في المتصفح
-2. استخدم الفأرة للتحرك داخل الجولة
-
-### الأنظمة:
-- 🟡 EL: كهرباء
-- 🔵 AC: تكييف
-- 🔵 WP: مياه
-- 🔴 WA: صرف صحي
-- 🟢 GS: غاز
-
-### النشر على GitHub Pages:
-1. ارفع محتويات هذا المجلد إلى مستودع GitHub
-2. فعل GitHub Pages من الإعدادات
-3. الجولة متاحة على: \`https://[اسمك].github.io/[المشروع]\`
-
----
-تم إنشاؤها باستخدام Virtual Tour Studio © 2026
-`;
-    }
-}
-
-// =======================================
 // المتغيرات الأساسية
 // =======================================
 let scene, camera, renderer, controls;
@@ -248,6 +16,9 @@ let pointMarkers = [];
 let markerPreview = null;
 
 let exportCanvas, exportContext;
+
+// متغيرات Hotspots
+let hotspotMode = null;
 
 const pathColors = {
     EL: 0xffcc00,
@@ -267,11 +38,8 @@ window.setCurrentPathType = (t) => {
     }
 };
 
-const projectManager = new ProjectManager();
-const tourExporter = new TourExporter();
-
 // =======================================
-// دوال الرسم
+// دوال الرسم الأساسية
 // =======================================
 
 // إعداد معاينة المؤشر
@@ -292,7 +60,7 @@ const mouse = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 
 function onClick(e) {
-    if (!drawMode || !sphereMesh) return;
+    if (!sphereMesh) return;
     if (e.target !== renderer.domElement) return;
 
     mouse.x = (e.clientX / renderer.domElement.clientWidth) * 2 - 1;
@@ -302,7 +70,15 @@ function onClick(e) {
     const hits = raycaster.intersectObject(sphereMesh);
 
     if (hits.length) {
-        addPoint(hits[0].point.clone());
+        const point = hits[0].point.clone();
+        
+        if (hotspotMode) {
+            addHotspot(point);
+            hotspotMode = null;
+            document.body.style.cursor = 'default';
+        } else if (drawMode) {
+            addPoint(point);
+        }
     }
 }
 
@@ -426,10 +202,7 @@ function createStraightPath(points) {
         const cylinderGeo = new THREE.CylinderGeometry(cylinderRadius, cylinderRadius, cylinderHeight, 12);
         
         const quaternion = new THREE.Quaternion();
-        const defaultDir = new THREE.Vector3(0, 1, 0);
-        const targetDir = direction.clone().normalize();
-        
-        quaternion.setFromUnitVectors(defaultDir, targetDir);
+        quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
         
         const material = new THREE.MeshStandardMaterial({
             color: color,
@@ -479,6 +252,78 @@ function createStraightPath(points) {
     console.log(`✅ تم إنشاء مسار بـ ${points.length-1} أجزاء`);
 }
 
+// =======================================
+// دوال Hotspots
+// =======================================
+function addHotspot(position) {
+    if (hotspotMode === 'INFO') {
+        const title = prompt('أدخل عنوان المعلومات:');
+        if (!title) return;
+        const content = prompt('أدخل نص المعلومات:');
+        if (!content) return;
+
+        const geometry = new THREE.SphereGeometry(14, 32, 32);
+        const material = new THREE.MeshStandardMaterial({
+            color: 0xffaa44,
+            emissive: 0xffaa44,
+            emissiveIntensity: 0.5
+        });
+
+        const marker = new THREE.Mesh(geometry, material);
+        marker.position.copy(position);
+        marker.userData = { 
+            type: 'hotspot', 
+            hotspotType: 'INFO',
+            title: title,
+            content: content
+        };
+        scene.add(marker);
+
+        alert(`✅ تم إضافة نقطة معلومات`);
+        
+    } else if (hotspotMode === 'SCENE') {
+        const targetScene = prompt('أدخل اسم المشهد المستهدف:');
+        if (!targetScene) return;
+        const description = prompt('أدخل وصفاً لهذه النقطة:') || `انتقال إلى ${targetScene}`;
+
+        const geometry = new THREE.SphereGeometry(14, 32, 32);
+        const material = new THREE.MeshStandardMaterial({
+            color: 0x44aaff,
+            emissive: 0x44aaff,
+            emissiveIntensity: 0.5
+        });
+
+        const marker = new THREE.Mesh(geometry, material);
+        marker.position.copy(position);
+        marker.userData = { 
+            type: 'hotspot', 
+            hotspotType: 'SCENE',
+            targetScene: targetScene,
+            description: description
+        };
+        scene.add(marker);
+
+        alert(`✅ تم إضافة نقطة انتقال`);
+    }
+}
+
+function rebuildHotspots(hotspots) {
+    // هذه الدالة للاستخدام المستقبلي مع المشاهد المتعددة
+}
+
+// =======================================
+// إعدادات التصدير
+// =======================================
+function setupExportCanvas() {
+    exportCanvas = document.createElement('canvas');
+    exportCanvas.width = 4096;
+    exportCanvas.height = 2048;
+    exportContext = exportCanvas.getContext('2d');
+}
+
+// =======================================
+// أحداث لوحة المفاتيح
+// =======================================
 function onKeyDown(e) {
     if (!drawMode) return;
 
@@ -524,91 +369,7 @@ function onResize() {
 }
 
 // =======================================
-// دوال التصدير
-// =======================================
-
-function setupExportCanvas() {
-    exportCanvas = document.createElement('canvas');
-    exportCanvas.width = 4096;
-    exportCanvas.height = 2048;
-    exportContext = exportCanvas.getContext('2d');
-}
-
-async function exportCompleteTour() {
-    if (!sphereMesh || !sphereMesh.material || !sphereMesh.material.map) {
-        alert('❌ الصورة البانورامية غير متوفرة');
-        return;
-    }
-
-    showLoader('جاري تحضير الجولة...');
-
-    try {
-        const texture = sphereMesh.material.map;
-        const image = texture.image;
-        const imageWidth = image.width;
-        const imageHeight = image.height;
-
-        exportCanvas.width = imageWidth;
-        exportCanvas.height = imageHeight;
-        exportContext.clearRect(0, 0, imageWidth, imageHeight);
-        exportContext.drawImage(image, 0, 0, imageWidth, imageHeight);
-
-        const imageData = exportCanvas.toDataURL('image/jpeg', 0.95);
-        const projectName = projectManager.currentProject?.name || `tour-${Date.now()}`;
-
-        await tourExporter.exportTour(projectName, imageData, paths, imageWidth, imageHeight);
-
-        hideLoader();
-        alert(`✅ تم تصدير الجولة بنجاح!\n📁 الملف: ${projectName}.zip`);
-
-    } catch (error) {
-        console.error('❌ خطأ في التصدير:', error);
-        alert('حدث خطأ في التصدير');
-        hideLoader();
-    }
-}
-
-function showLoader(message) {
-    const loader = document.getElementById('loader');
-    loader.style.display = 'flex';
-    loader.textContent = message || '⏳ جاري التحميل...';
-}
-
-function hideLoader() {
-    document.getElementById('loader').style.display = 'none';
-}
-
-// =======================================
-// تحميل المشروع
-// =======================================
-function loadProject(project) {
-    projectManager.currentProject = project;
-    
-    if (project.imageData) {
-        const img = new Image();
-        img.onload = () => {
-            const texture = new THREE.CanvasTexture(img);
-            sphereMesh.material.map = texture;
-            sphereMesh.material.needsUpdate = true;
-            
-            paths.forEach(p => scene.remove(p));
-            paths = [];
-            
-            project.paths.forEach(pathData => {
-                const points = pathData.points.map(p => new THREE.Vector3(p.x, p.y, p.z));
-                currentPathType = pathData.type;
-                createStraightPath(points);
-            });
-        };
-        img.src = project.imageData;
-    }
-    
-    document.getElementById('projectPanel').style.display = 'none';
-    alert(`✅ تم تحميل المشروع: ${project.name}`);
-}
-
-// =======================================
-// إعداد الأحداث (مرة واحدة فقط)
+// إعداد الأحداث
 // =======================================
 function setupEvents() {
     renderer.domElement.addEventListener('click', onClick);
@@ -616,91 +377,65 @@ function setupEvents() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onResize);
     
-    document.getElementById('toggleRotate').onclick = () => {
-        autorotate = !autorotate;
-        controls.autoRotate = autorotate;
-        document.getElementById('toggleRotate').textContent = 
-            autorotate ? '⏸️ إيقاف التدوير' : '▶️ تشغيل التدوير';
-    };
-
-    document.getElementById('toggleDraw').onclick = () => {
-        drawMode = !drawMode;
-        const btn = document.getElementById('toggleDraw');
-        
-        if (drawMode) {
-            btn.textContent = '⛔ إيقاف الرسم';
-            btn.style.background = '#aa3333';
-            document.body.style.cursor = 'crosshair';
-            if (markerPreview) markerPreview.visible = true;
-            controls.autoRotate = false;
-        } else {
-            btn.textContent = '✏️ تفعيل الرسم';
-            btn.style.background = '#8f6c4a';
-            document.body.style.cursor = 'default';
-            if (markerPreview) markerPreview.visible = false;
+    const toggleRotate = document.getElementById('toggleRotate');
+    if (toggleRotate) {
+        toggleRotate.onclick = () => {
+            autorotate = !autorotate;
             controls.autoRotate = autorotate;
-            clearCurrentDrawing();
-        }
-    };
+            toggleRotate.textContent = autorotate ? '⏸️ إيقاف التدوير' : '▶️ تشغيل التدوير';
+        };
+    }
 
-    document.getElementById('finalizePath').onclick = saveCurrentPath;
+    const toggleDraw = document.getElementById('toggleDraw');
+    if (toggleDraw) {
+        toggleDraw.onclick = () => {
+            drawMode = !drawMode;
+            if (drawMode) {
+                toggleDraw.textContent = '⛔ إيقاف الرسم';
+                toggleDraw.style.background = '#aa3333';
+                document.body.style.cursor = 'crosshair';
+                if (markerPreview) markerPreview.visible = true;
+                controls.autoRotate = false;
+            } else {
+                toggleDraw.textContent = '✏️ تفعيل الرسم';
+                toggleDraw.style.background = '#8f6c4a';
+                document.body.style.cursor = 'default';
+                if (markerPreview) markerPreview.visible = false;
+                controls.autoRotate = autorotate;
+                clearCurrentDrawing();
+            }
+        };
+    }
 
-    document.getElementById('clearAll').onclick = () => {
-        if (confirm('هل أنت متأكد من مسح جميع المسارات؟')) {
-            paths.forEach(path => scene.remove(path));
-            paths = [];
-            clearCurrentDrawing();
-        }
-    };
+    const finalizePath = document.getElementById('finalizePath');
+    if (finalizePath) finalizePath.onclick = saveCurrentPath;
 
-    document.getElementById('newProject').onclick = () => {
-        const name = prompt('أدخل اسم المشروع:');
-        if (name) {
-            projectManager.newProject(name);
-            alert(`✅ مشروع جديد: ${name}`);
-        }
-    };
+    const clearAll = document.getElementById('clearAll');
+    if (clearAll) {
+        clearAll.onclick = () => {
+            if (confirm('هل أنت متأكد من مسح جميع المسارات؟')) {
+                paths.forEach(path => scene.remove(path));
+                paths = [];
+                clearCurrentDrawing();
+            }
+        };
+    }
 
-    document.getElementById('openProject').onclick = () => {
-        const panel = document.getElementById('projectPanel');
-        const list = document.getElementById('projectList');
-        
-        list.innerHTML = '';
-        projectManager.projects.forEach(project => {
-            const item = document.createElement('div');
-            item.className = 'project-item';
-            item.innerHTML = `
-                <strong>${project.name}</strong><br>
-                <small>${new Date(project.created).toLocaleDateString()}</small>
-            `;
-            item.onclick = () => loadProject(project);
-            list.appendChild(item);
-        });
-        
-        panel.style.display = 'block';
-    };
+    const hotspotScene = document.getElementById('hotspotScene');
+    if (hotspotScene) {
+        hotspotScene.onclick = () => { 
+            hotspotMode = 'SCENE'; 
+            document.body.style.cursor = 'cell'; 
+        };
+    }
 
-    document.getElementById('saveProject').onclick = () => {
-        if (!projectManager.currentProject) {
-            const name = prompt('أدخل اسم المشروع:');
-            if (name) projectManager.newProject(name);
-        }
-        
-        if (projectManager.currentProject && sphereMesh?.material?.map) {
-            const image = sphereMesh.material.map.image;
-            exportCanvas.width = image.width;
-            exportCanvas.height = image.height;
-            exportContext.drawImage(image, 0, 0, image.width, image.height);
-            
-            projectManager.saveCurrentProject(
-                paths, 
-                exportCanvas.toDataURL('image/jpeg', 0.95)
-            );
-            alert('✅ تم حفظ المشروع');
-        }
-    };
-
-    document.getElementById('exportTour').onclick = exportCompleteTour;
+    const hotspotInfo = document.getElementById('hotspotInfo');
+    if (hotspotInfo) {
+        hotspotInfo.onclick = () => { 
+            hotspotMode = 'INFO'; 
+            document.body.style.cursor = 'cell'; 
+        };
+    }
 }
 
 // =======================================
@@ -720,6 +455,7 @@ function init() {
     renderer.setPixelRatio(window.devicePixelRatio);
     document.getElementById('container').appendChild(renderer.domElement);
 
+    // الإضاءة
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
     scene.add(ambientLight);
 
@@ -731,6 +467,7 @@ function init() {
     dirLight2.position.set(-1, -1, -0.5);
     scene.add(dirLight2);
 
+    // التحكم
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableZoom = true;
     controls.enablePan = false;
